@@ -1,0 +1,56 @@
+MIT License
+
+Copyright (c) 2026 Ghost in the Prompt
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+IMPORTANT LEGAL NOTICE:
+
+This tool is designed for AUTHORIZED SECURITY TESTING ONLY.
+
+Unauthorized testing of computer systems, networks, or websites is ILLEGAL
+under federal and international law, including but not limited to:
+- Computer Fraud and Abuse Act (CFAA) in the United States
+- Computer Misuse Act in the United Kingdom
+- Similar laws in other jurisdictions
+
+Use of this tool against systems you do not own or have explicit written
+permission to test may result in:
+- Criminal prosecution
+- Civil liability
+- Significant fines and/or imprisonment
+
+The authors and copyright holders of this software:
+- Do NOT authorize, encourage, or condone unauthorized use
+- Are NOT responsible for any misuse of this software
+- Are NOT liable for any damages resulting from use of this software
+
+By using this software, you agree to use it only for:
+- Testing your own infrastructure
+- Authorized penetration testing engagements with written permission
+- Educational purposes in controlled lab environments
+- Security research in accordance with responsible disclosure practices
+
+If you use this tool to target journalists, steal investigations, identify
+sources, or suppress truth, you are not a security researcher. You are
+collaborating with authoritarians who harm press freedom.
+
+Protect the press. Even when it's complicated.
