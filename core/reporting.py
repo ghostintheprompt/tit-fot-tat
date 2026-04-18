@@ -3,7 +3,83 @@ Reporting Module
 Generate security audit reports in various formats
 """
 
-from datetime import datetime
+import hashlib
+import hmac
+import json
+import os
+import socket
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+
+# ── Chain of Custody ──────────────────────────────────────────────────────────
+
+_COC_HMAC_KEY = os.environ.get("TFT_HMAC_KEY", "tit-for-tat-default-key").encode()
+
+
+def chain_of_custody(
+    url: str,
+    content: bytes,
+    source_ip: str,
+    extra: Optional[Dict[str, Any]] = None,
+    asn_data: Optional[Dict] = None,
+) -> Dict:
+    """
+    Generate a Forensic Integrity Report for a single fetched resource.
+
+    Produces a tamper-evident record linking the URL, content hash, network
+    provenance, and collection timestamp. The record can be used to demonstrate
+    chain of custody in legal or editorial attribution proceedings.
+
+    Fields:
+      sha256          — hex digest of raw content bytes
+      hmac_sha256     — HMAC-SHA256 using TFT_HMAC_KEY env var (proves record
+                        was produced by this tool instance, not forged later)
+      collected_at    — ISO-8601 UTC timestamp
+      collector_host  — hostname of the machine that performed the fetch
+      source_ip       — IP address the content was served from
+      content_length  — bytes
+      asn_profile     — org/ASN/country from ipinfo.io (if provided)
+    """
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    report: Dict[str, Any] = {
+        "schema_version": "1.0",
+        "url": url,
+        "source_ip": source_ip,
+        "content_length": len(content),
+        "sha256": sha256,
+        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "collector_host": socket.gethostname(),
+    }
+
+    if asn_data:
+        report["asn_profile"] = {
+            k: asn_data.get(k)
+            for k in ("ip", "rdns", "asn", "org", "country", "city", "hosting")
+        }
+
+    if extra:
+        report["extra"] = extra
+
+    # HMAC over the canonical JSON body (sorted keys, no whitespace)
+    canonical = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+    report["hmac_sha256"] = hmac.new(_COC_HMAC_KEY, canonical, hashlib.sha256).hexdigest()
+
+    return report
+
+
+def save_coc_report(report: Dict, output_dir: str = "forensics") -> Path:
+    """Write a chain-of-custody record to disk and return the path."""
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    slug = report["url"].split("//")[-1].replace("/", "_").replace(":", "-")[:60]
+    path = out / f"coc_{ts}_{slug}.json"
+    path.write_text(json.dumps(report, indent=2))
+    return path
 
 
 def generate_html(results, output_file):

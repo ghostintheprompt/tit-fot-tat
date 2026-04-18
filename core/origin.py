@@ -3,11 +3,215 @@ Origin Server Discovery Module
 Techniques for bypassing CDN protection to find real server IP
 """
 
+import re
 import socket
 import requests
 import dns.resolver
 from urllib.parse import urlparse
 import time
+
+
+# ── Canary Token Detection ─────────────────────────────────────────────────────
+
+# Unicode zero-width and invisible characters used as scraper traps
+_ZERO_WIDTH_CHARS = [
+    '\u200b',  # Zero Width Space
+    '\u200c',  # Zero Width Non-Joiner
+    '\u200d',  # Zero Width Joiner
+    '\ufeff',  # Zero Width No-Break Space (BOM)
+    '\u00ad',  # Soft Hyphen
+    '\u2060',  # Word Joiner
+    '\u180e',  # Mongolian Vowel Separator
+]
+
+_HONEYPOT_PATTERNS = [
+    # CSS-hidden elements: bots scrape text, humans don't see it
+    re.compile(r'<[^>]+(?:display\s*:\s*none|visibility\s*:\s*hidden|'
+               r'font-size\s*:\s*0|opacity\s*:\s*0)[^>]*>([^<]+)</', re.I),
+    # Off-screen absolute positioning
+    re.compile(r'<[^>]+left\s*:\s*-\d{3,}px[^>]*>([^<]+)</', re.I),
+]
+
+_HONEYPOT_CLASS_RE = re.compile(
+    r'class="[^"]*(?:honeypot|canary|trap|hidden-trap|invisible)[^"]*"', re.I
+)
+
+_TRACKING_PIXEL_RE = re.compile(
+    r'<img[^>]+(?:width="1"[^>]+height="1"|height="1"[^>]+width="1")[^>]*>', re.I
+)
+
+_CANARY_META_RE = re.compile(
+    r'<meta[^>]+name="(?:tracking-id|canary|honeytoken)[^"]*"[^>]*>', re.I
+)
+
+
+def scan_canary_tokens(html: str, url: str = "") -> dict:
+    """
+    Scan HTML for embedded canary tokens and honeytrap signals.
+
+    Returns a structured findings dict with severity ratings. Any findings
+    indicate the target is actively monitoring scrapers — continuing without
+    evasion will trigger attribution.
+    """
+    findings = []
+
+    # Zero-width character injection
+    found_zw = [c for c in _ZERO_WIDTH_CHARS if c in html]
+    if found_zw:
+        positions = []
+        for c in found_zw:
+            idx = html.find(c)
+            positions.append(idx)
+        findings.append({
+            "type": "ZERO_WIDTH_CHARS",
+            "severity": "HIGH",
+            "detail": (
+                f"Found {len(found_zw)} invisible Unicode character(s): "
+                + ", ".join(f"U+{ord(c):04X}" for c in found_zw)
+            ),
+            "positions": positions,
+            "interpretation": (
+                "Unique character sequences watermark content. If you store and "
+                "republish this text, the source can be attributed to this scrape session."
+            ),
+        })
+
+    # CSS-hidden honeypot spans / divs
+    for pattern in _HONEYPOT_PATTERNS:
+        matches = pattern.findall(html)
+        if matches:
+            findings.append({
+                "type": "CSS_HIDDEN_TEXT",
+                "severity": "MEDIUM",
+                "detail": (
+                    f"Found {len(matches)} CSS-hidden text segment(s). "
+                    f"Sample: {matches[0][:80]!r}"
+                ),
+                "interpretation": (
+                    "Text invisible to readers but scraped by bots. "
+                    "Contains bait contact info or honeypot strings."
+                ),
+            })
+            break
+
+    # Honeypot class names
+    if _HONEYPOT_CLASS_RE.search(html):
+        findings.append({
+            "type": "HONEYPOT_CLASS",
+            "severity": "HIGH",
+            "detail": "Element with honeypot/canary/trap CSS class found",
+            "interpretation": (
+                "Clicking or following links in this element triggers "
+                "server-side attribution — do not request linked URLs."
+            ),
+        })
+
+    # 1×1 tracking pixel
+    pixels = _TRACKING_PIXEL_RE.findall(html)
+    if pixels:
+        findings.append({
+            "type": "TRACKING_PIXEL",
+            "severity": "LOW",
+            "detail": f"Found {len(pixels)} 1×1 tracking pixel(s)",
+            "interpretation": (
+                "Real browsers load this resource; headless clients that skip "
+                "image requests are fingerprinted by its absence."
+            ),
+        })
+
+    # Canary meta tags
+    if _CANARY_META_RE.search(html):
+        findings.append({
+            "type": "CANARY_META_TAG",
+            "severity": "MEDIUM",
+            "detail": "Tracking/canary meta tag in <head>",
+            "interpretation": (
+                "Session tracking ID embedded in page metadata. "
+                "Value may be unique per visitor."
+            ),
+        })
+
+    # Data-attribute canary
+    if re.search(r'data-canary(?:-id)?=', html, re.I):
+        findings.append({
+            "type": "DATA_ATTRIBUTE_CANARY",
+            "severity": "MEDIUM",
+            "detail": "data-canary attribute found on DOM element",
+            "interpretation": (
+                "Attribute value is likely unique per session. "
+                "Storing scraped HTML leaks the tracking ID."
+            ),
+        })
+
+    risk = "NONE"
+    if any(f["severity"] == "HIGH" for f in findings):
+        risk = "HIGH"
+    elif any(f["severity"] == "MEDIUM" for f in findings):
+        risk = "MEDIUM"
+    elif findings:
+        risk = "LOW"
+
+    return {
+        "url": url,
+        "canary_count": len(findings),
+        "overall_risk": risk,
+        "findings": findings,
+        "recommendation": (
+            "Use stealth mode (--stealth) and session rotation to avoid "
+            "leaving attributable fingerprints on canary-protected targets."
+        ) if findings else "No canary tokens detected.",
+    }
+
+
+# ── ASN Profiling ──────────────────────────────────────────────────────────────
+
+def asn_profile(ip: str) -> dict:
+    """
+    Build an ASN/network profile for an IP address.
+
+    Uses reverse DNS + ipinfo.io (free tier, no API key required for basic fields).
+    Returned dict includes org, ASN, country, and abuse contact where available.
+    """
+    profile = {"ip": ip, "rdns": None, "asn": None, "org": None,
+               "country": None, "city": None, "hosting": False}
+
+    # Reverse DNS
+    try:
+        hostname, _, _ = socket.gethostbyaddr(ip)
+        profile["rdns"] = hostname
+    except (socket.herror, socket.gaierror):
+        pass
+
+    # ipinfo.io free API (no key needed for basic fields, 50k req/month)
+    try:
+        resp = requests.get(
+            f"https://ipinfo.io/{ip}/json",
+            timeout=5,
+            headers={"Accept": "application/json"},
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            profile["org"] = data.get("org")         # "AS13335 Cloudflare, Inc."
+            profile["country"] = data.get("country")
+            profile["city"] = data.get("city")
+            profile["region"] = data.get("region")
+            if profile["org"]:
+                # Extract bare ASN
+                m = re.match(r"(AS\d+)", profile["org"])
+                if m:
+                    profile["asn"] = m.group(1)
+                # Flag well-known hosting/CDN ASNs
+                hosting_keywords = [
+                    "amazon", "aws", "cloudflare", "fastly", "akamai",
+                    "digitalocean", "linode", "vultr", "hetzner", "ovh",
+                    "google", "microsoft", "azure", "cloudfront",
+                ]
+                org_lower = profile["org"].lower()
+                profile["hosting"] = any(k in org_lower for k in hosting_keywords)
+    except Exception:
+        pass
+
+    return profile
 
 
 def cert_transparency_lookup(domain):
