@@ -1,5 +1,9 @@
-# Tit for Tat
+# Tit-for-Tat
 ## Newsroom Security Testing Framework
+
+<div align="center">
+  <img src="tit_for_tat.png" width="256" height="256" alt="Tit-for-Tat Icon" />
+</div>
 
 **Penetration testing framework for news infrastructure. Red team tool. Blue team defense. February 2026.**
 
