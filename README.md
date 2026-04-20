@@ -1,4 +1,6 @@
-<img src="tit_for_tat.png" width="200">
+<p align="center">
+  <img src="tit_for_tat.png" width="520">
+</p>
 
 # Tit-for-Tat
 Penetration testing framework for newsroom infrastructure. — v1.0
