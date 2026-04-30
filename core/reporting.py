@@ -214,7 +214,50 @@ def generate_html(results, output_file):
 """
                 for exposure in cms['draft_exposure']:
                     html += f"<li>{exposure['method']}: {exposure['url']}</li>"
-                html += "</ul></div>"
+                html += "</ul>"
+
+            if cms.get('metadata_leaks', {}).get('leaks'):
+                html += """
+<div class="warning">
+    <strong>WARNING: Metadata Persistence Detected</strong><br>
+    Sensitive metadata (EXIF/PDF Info) found in served media.
+</div>
+<ul>
+"""
+                for leak in cms['metadata_leaks']['leaks']:
+                    html += f"<li>{leak['type']} in {leak['source']} ({leak.get('severity', 'LOW')})</li>"
+                html += "</ul>"
+
+    # Comment Platform Section
+    if 'comments' in results:
+        html += "<h2>Comment Platform Analysis</h2>"
+        comm = results['comments']
+
+        if comm.get('platform'):
+            html += f"<div class='info'><strong>Platform:</strong> {comm['platform'].title()}</div>"
+
+            if comm.get('moderators'):
+                html += "<h3>Potential Moderators Found</h3><ul>"
+                for mod in comm['moderators']:
+                    html += f"<li>{mod['name']} ({mod['type']})</li>"
+                html += "</ul>"
+
+            if comm.get('phishing_vectors'):
+                html += "<div class='warning'><strong>PHISHING VECTORS DETECTED</strong></div><ul>"
+                for vector in comm['phishing_vectors']:
+                    html += f"<li>{vector['type']}: {vector['detail']}</li>"
+                html += "</ul>"
+
+            if comm.get('auth_security'):
+                auth = comm['auth_security']
+                html += f"""
+<div class="info">
+    <strong>Auth Security:</strong><br>
+    Requires Login: {'Yes' if auth.get('requires_auth') else 'No'}<br>
+    CAPTCHA: {'Present' if auth.get('has_captcha') else 'Absent'}<br>
+    CSRF Protection: {'Present' if auth.get('has_nonce') else 'Absent'}
+</div>
+"""
 
     # RSS Feed Analysis Section
     if 'rss' in results:
@@ -312,24 +355,35 @@ def display_summary(results):
     if results.get('cms', {}).get('draft_exposure'):
         critical_count += len(results['cms']['draft_exposure'])
 
+    if results.get('cms', {}).get('metadata_leaks', {}).get('leaks'):
+        warning_count += len(results['cms']['metadata_leaks']['leaks'])
+
+    if results.get('comments', {}).get('phishing_vectors'):
+        warning_count += len(results['comments']['phishing_vectors'])
+
     if results.get('rss', {}).get('issues'):
         critical_count += len(results['rss']['issues'])
 
     print(f"\n[!] Critical Issues: {critical_count}")
     print(f"[!] Warnings: {warning_count}")
 
-    if critical_count > 0:
-        print("\n[!] CRITICAL VULNERABILITIES DETECTED")
-        print("[!] Immediate remediation required")
+    if critical_count > 0 or warning_count > 0:
+        print("\n[!] VULNERABILITIES DETECTED")
 
         if results.get('origin', {}).get('verified'):
-            print("\n    • Origin server exposed (Cloudflare bypass)")
+            print("    • Origin server exposed (Cloudflare bypass) [CRITICAL]")
 
         if results.get('cms', {}).get('draft_exposure'):
-            print("\n    • Draft content exposure detected")
+            print(f"    • Draft content exposure ({len(results['cms']['draft_exposure'])} endpoints) [CRITICAL]")
 
         if results.get('rss', {}).get('issues'):
-            print("\n    • RSS feed information leaks")
+            print(f"    • RSS feed information leaks ({len(results['rss']['issues'])} issues) [CRITICAL]")
+
+        if results.get('cms', {}).get('metadata_leaks', {}).get('leaks'):
+            print(f"    • Metadata persistence in media ({len(results['cms']['metadata_leaks']['leaks'])} leaks) [WARNING]")
+
+        if results.get('comments', {}).get('phishing_vectors'):
+            print(f"    • Comment phishing vectors ({len(results['comments']['phishing_vectors'])} vectors) [WARNING]")
 
     else:
         print("\n[✓] No critical vulnerabilities detected")

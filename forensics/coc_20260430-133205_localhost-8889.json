@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "url": "http://localhost:8889",
+  "source_ip": "127.0.0.1",
+  "content_length": 2168,
+  "sha256": "a254acf7a0e545b38e87b32d1bf1895779e0cea94d77fc8489a27c29573d65cb",
+  "collected_at": "2026-04-30T13:32:05.883694+00:00",
+  "collector_host": "MacBookAir",
+  "asn_profile": {
+    "ip": "127.0.0.1",
+    "rdns": "localhost",
+    "asn": null,
+    "org": null,
+    "country": null,
+    "city": null,
+    "hosting": false
+  },
+  "extra": {
+    "http_status": 200,
+    "content_type": "text/html; charset=utf-8"
+  },
+  "hmac_sha256": "027da372645a3b89418657da3a1e86e2e6e0e0c2827f37996f67c8598aa54d53"
+}

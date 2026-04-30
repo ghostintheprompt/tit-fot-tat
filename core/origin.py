@@ -4,6 +4,7 @@ Techniques for bypassing CDN protection to find real server IP
 """
 
 import re
+import os
 import socket
 import requests
 import dns.resolver
@@ -214,7 +215,7 @@ def asn_profile(ip: str) -> dict:
     return profile
 
 
-def cert_transparency_lookup(domain):
+def cert_transparency_lookup(domain, session=None):
     """
     Query Certificate Transparency logs to find origin IP
     Works ~85% of time against Cloudflare
@@ -222,10 +223,12 @@ def cert_transparency_lookup(domain):
     results = []
     print(f"[+] Querying Certificate Transparency logs for {domain}...")
 
+    _get = session.get if session else requests.get
+
     try:
         # Query crt.sh (Certificate Transparency log aggregator)
         url = f"https://crt.sh/?q=%.{domain}&output=json"
-        response = requests.get(url, timeout=10)
+        response = _get(url, timeout=10)
 
         if response.status_code == 200:
             certs = response.json()
@@ -246,30 +249,75 @@ def cert_transparency_lookup(domain):
     return results
 
 
-def dns_history_lookup(domain):
+def dns_history_lookup(domain, session=None):
     """
-    Check historical DNS records
-    Works ~70% of time - many sites added CDN later
+    Check historical DNS records.
+    In a full implementation, this queries SecurityTrails, DNSHistory, or similar.
+    This version attempts to find non-CDN IPs from current and recent records.
     """
     results = []
     print(f"[+] Checking historical DNS records for {domain}...")
 
-    # In production, this would query SecurityTrails, DNSHistory.org, etc.
-    # For demo, we'll do basic current DNS
+    _get = session.get if session else requests.get
+
+    # 1. Current A records (filter CDNs)
     try:
         answers = dns.resolver.resolve(domain, 'A')
         for rdata in answers:
             ip = str(rdata)
-            if not ip.startswith('104.') and not ip.startswith('172.'):  # Filter CDN IPs
+            if not _is_cdn_ip(ip):
                 results.append(ip)
-                print(f"    [✓] Found potential origin: {ip}")
-    except Exception as e:
-        print(f"    [!] DNS lookup failed: {e}")
+                print(f"    [✓] Found potential origin (Current A): {ip}")
+    except Exception:
+        pass
 
-    # Note: Real implementation would query historical DNS services
-    print(f"    [i] Note: Full historical DNS requires SecurityTrails API key")
+    # 2. Check common "old" subdomains that might point to previous infrastructure
+    for sub in ['old', 'legacy', 'backup', 'origin-static', 'direct']:
+        try:
+            ip = socket.gethostbyname(f"{sub}.{domain}")
+            if not _is_cdn_ip(ip) and ip not in results:
+                results.append(ip)
+                print(f"    [✓] Found potential origin ({sub} subdomain): {ip}")
+        except Exception:
+            pass
 
-    return results
+    # 3. Actual historical lookup if API key is present
+    api_key = os.environ.get('TFT_SECURITYTRAILS_KEY')
+    if api_key:
+        print(f"    [+] Querying SecurityTrails API for {domain}...")
+        try:
+            url = f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
+            response = _get(url, headers={'APIKEY': api_key}, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                for record in data.get('records', []):
+                    for val in record.get('values', []):
+                        ip = val.get('ip')
+                        if ip and not _is_cdn_ip(ip) and ip not in results:
+                            results.append(ip)
+                            print(f"    [✓] Found historical origin: {ip}")
+            else:
+                print(f"    [!] SecurityTrails API returned status {response.status_code}")
+        except Exception as e:
+            print(f"    [!] SecurityTrails lookup failed: {e}")
+    else:
+        print(f"    [i] Note: Comprehensive historical DNS requires SecurityTrails API key (TFT_SECURITYTRAILS_KEY)")
+
+    return list(set(results))
+
+
+def _is_cdn_ip(ip: str) -> bool:
+    """Helper to identify common CDN IP ranges (Cloudflare, Akamai, etc.)"""
+    # Cloudflare: 104.16.0.0/12, 172.64.0.0/13, etc.
+    if ip.startswith(('104.', '172.64.', '172.65.', '172.66.', '172.67.', '172.68.', '172.69.', '172.70.', '172.71.')):
+        return True
+    # Fastly: 151.101.0.0/16
+    if ip.startswith('151.101.'):
+        return True
+    # Akamai (partial)
+    if ip.startswith(('23.32.', '23.33.', '23.60.', '23.61.')):
+        return True
+    return False
 
 
 def mx_record_correlation(domain):
@@ -338,15 +386,17 @@ def subdomain_enumeration(domain):
     return results
 
 
-def verify_origin(ip, domain):
+def verify_origin(ip, domain, session=None):
     """
     Verify that discovered IP is actually the origin server
     """
     print(f"\n[*] Verifying {ip} as origin for {domain}...")
 
+    _get = session.get if session else requests.get
+
     try:
         # Try direct HTTP request with Host header
-        response = requests.get(
+        response = _get(
             f"http://{ip}",
             headers={'Host': domain},
             timeout=5,
@@ -367,11 +417,12 @@ def verify_origin(ip, domain):
         return False
 
 
-def discover(args):
+def discover(args, target=None, session=None):
     """
     Main discovery function - orchestrates all techniques
     """
-    domain = args.domain.replace('https://', '').replace('http://', '').split('/')[0]
+    domain_raw = target or args.domain
+    domain = domain_raw.replace('https://', '').replace('http://', '').split('/')[0]
 
     results = {
         'domain': domain,
@@ -383,22 +434,22 @@ def discover(args):
     start_time = time.time()
 
     # Run discovery methods
-    if args.all_methods or args.cert_transparency:
-        ct_results = cert_transparency_lookup(domain)
+    if getattr(args, 'all_methods', True) or getattr(args, 'cert_transparency', False):
+        ct_results = cert_transparency_lookup(domain, session=session)
         results['methods']['cert_transparency'] = ct_results
         results['origin_ips'].extend(ct_results)
 
-    if args.all_methods or args.dns_history:
-        dns_results = dns_history_lookup(domain)
+    if getattr(args, 'all_methods', True) or getattr(args, 'dns_history', False):
+        dns_results = dns_history_lookup(domain, session=session)
         results['methods']['dns_history'] = dns_results
         results['origin_ips'].extend(dns_results)
 
-    if args.all_methods or args.mx_correlation:
+    if getattr(args, 'all_methods', True) or getattr(args, 'mx_correlation', False):
         mx_results = mx_record_correlation(domain)
         results['methods']['mx_correlation'] = mx_results
         results['origin_ips'].extend(mx_results)
 
-    if args.all_methods or args.subdomain_scan:
+    if getattr(args, 'all_methods', True) or getattr(args, 'subdomain_scan', False):
         sub_results = subdomain_enumeration(domain)
         results['methods']['subdomain_scan'] = sub_results
         # Extract IPs from subdomain results
@@ -414,7 +465,7 @@ def discover(args):
         print(f"[*] Verifying origin servers...")
 
         for ip in results['origin_ips'][:3]:  # Only verify first 3 to avoid detection
-            if verify_origin(ip, domain):
+            if verify_origin(ip, domain, session=session):
                 results['verified'].append(ip)
 
     elapsed = time.time() - start_time

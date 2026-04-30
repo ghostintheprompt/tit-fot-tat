@@ -90,6 +90,8 @@ def _build_test_page() -> bytes:
   <meta charset="UTF-8">
   <meta name="tracking-id" content="{CANARY_TOKENS['meta_tracking_id']}">
   <title>Research Portal</title>
+  <meta name="generator" content="WordPress 6.4.2">
+  <link rel="stylesheet" href="/wp-content/themes/twentytwentyfour/style.css">
   <style>
     body {{ font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 20px; }}
     h1 {{ color: #333; }}

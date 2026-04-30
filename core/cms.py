@@ -12,31 +12,33 @@ from bs4 import BeautifulSoup
 
 VULNERABLE_PLUGINS = {
     'editflow': {
-        'versions': ['0.8.1', '0.8.0', '0.7.x'],
-        'vuln': 'Privilege escalation - contributors can access drafts',
-        'cve': 'CVE-2023-XXXXX'
+        'versions': ['0.8.2', '0.8.1', '0.8.0'],
+        'vuln': 'Broken Access Control - contributors can access drafts',
+        'cve': 'CVE-2023-30514'
     },
     'co-authors-plus': {
-        'versions': ['3.5.12', '3.5.11', '3.5.x'],
-        'vuln': 'Role bypass allows unauthorized draft access',
-        'cve': 'CVE-2023-YYYYY'
+        'versions': ['3.5.14', '3.5.13', '3.5.12'],
+        'vuln': 'Broken Access Control allows unauthorized draft access',
+        'cve': 'CVE-2023-30512'
     },
     'advanced-custom-fields-pro': {
         'versions': ['all'],
         'vuln': 'Metadata exposure via REST API',
-        'cve': 'N/A (design flaw)'
+        'cve': 'N/A (Design Flaw)'
     }
 }
 
 
-def detect_wordpress(url):
+def detect_wordpress(url, session=None):
     """
     Detect if site is running WordPress
     """
     print(f"[+] Detecting CMS type...")
 
+    _get = session.get if session else requests.get
+
     try:
-        response = requests.get(url, timeout=10)
+        response = _get(url, timeout=10)
         content = response.text.lower()
 
         if 'wp-content' in content or 'wordpress' in content:
@@ -59,11 +61,13 @@ def detect_wordpress(url):
         return None, None
 
 
-def scan_plugins(url):
+def scan_plugins(url, session=None):
     """
     Detect installed plugins and check for known vulnerabilities
     """
     print(f"\n[+] Scanning for editorial plugins...")
+
+    _get = session.get if session else requests.get
 
     plugins_found = []
 
@@ -78,7 +82,7 @@ def scan_plugins(url):
     for path in plugin_paths:
         full_url = url.rstrip('/') + path
         try:
-            response = requests.get(full_url, timeout=5)
+            response = _get(full_url, timeout=5)
             if response.status_code == 200:
                 # Extract plugin name and version
                 plugin_name = path.split('/plugins/')[1].split('/')[0]
@@ -109,18 +113,20 @@ def scan_plugins(url):
     return plugins_found
 
 
-def test_draft_exposure(url):
+def test_draft_exposure(url, session=None):
     """
     Test if unpublished drafts are accessible
     """
     print(f"\n[+] Testing draft exposure...")
+
+    _get = session.get if session else requests.get
 
     exposure_points = []
 
     # Test REST API
     api_url = url.rstrip('/') + '/wp-json/wp/v2/posts?status=draft'
     try:
-        response = requests.get(api_url, timeout=5)
+        response = _get(api_url, timeout=5)
         if response.status_code == 200:
             drafts = response.json()
             if drafts:
@@ -145,7 +151,7 @@ def test_draft_exposure(url):
     for test_url in workflow_urls:
         full_url = url.rstrip('/') + test_url
         try:
-            response = requests.get(full_url, timeout=5)
+            response = _get(full_url, timeout=5)
             if response.status_code == 200 and 'draft' in response.text.lower():
                 print(f"    [!] Potential draft exposure: {test_url}")
                 exposure_points.append({
@@ -162,43 +168,51 @@ def test_draft_exposure(url):
     return exposure_points
 
 
-def scan(args):
+def scan(args, target=None, session=None):
     """
     Main CMS scanning function
     """
+    url = target or args.url
     results = {
-        'url': args.url,
+        'url': url,
         'cms_type': None,
         'cms_version': None,
         'plugins': [],
         'vulnerabilities': [],
-        'draft_exposure': []
+        'draft_exposure': [],
+        'metadata_leaks': []
     }
 
     # Detect CMS
-    cms_type, cms_version = detect_wordpress(args.url)
+    cms_type, cms_version = detect_wordpress(url, session=session)
     results['cms_type'] = cms_type
     results['cms_version'] = cms_version
 
     if not cms_type:
         print("\n[i] Non-WordPress CMS detected or CMS hidden")
         print("[i] Limited scanning available")
+        # Still check for metadata leaks
+        results['metadata_leaks'] = check_metadata_persistence(url, session=session)
         return results
 
     # Scan plugins
-    if args.check_plugins:
-        plugins = scan_plugins(args.url)
+    if getattr(args, 'check_plugins', True):
+        plugins = scan_plugins(url, session=session)
         results['plugins'] = plugins
 
     # Test draft exposure
-    if args.check_drafts:
-        exposure = test_draft_exposure(args.url)
+    if getattr(args, 'check_drafts', True):
+        exposure = test_draft_exposure(url, session=session)
         results['draft_exposure'] = exposure
+
+    # Check for metadata leaks
+    print("\n[+] Checking for metadata persistence in media...")
+    results['metadata_leaks'] = check_metadata_persistence(url, session=session)
 
     return results
 
 
-def check_metadata_persistence(url: str) -> dict:
+def check_metadata_persistence(url: str, session=None) -> dict:
     """
     Check for metadata leakage in images and documents served by the target.
 
@@ -217,8 +231,10 @@ def check_metadata_persistence(url: str) -> dict:
         "leaks": [],
     }
 
+    _get = session.get if session else requests.get
+
     try:
-        resp = requests.get(url, timeout=10)
+        resp = _get(url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
     except Exception as e:
         findings["error"] = str(e)
@@ -238,7 +254,7 @@ def check_metadata_persistence(url: str) -> dict:
             continue
 
         try:
-            r = requests.get(src, timeout=5, stream=True)
+            r = _get(src, timeout=5, stream=True)
             chunk = b""
             for block in r.iter_content(65536):
                 chunk += block
@@ -270,7 +286,7 @@ def check_metadata_persistence(url: str) -> dict:
             href = base + ("" if href.startswith("/") else "/") + href.lstrip("/")
 
         try:
-            r = requests.get(href, timeout=8, stream=True)
+            r = _get(href, timeout=8, stream=True)
             chunk = b""
             for block in r.iter_content(8192):
                 chunk += block
@@ -409,5 +425,12 @@ def display_results(results):
         for exposure in results['draft_exposure']:
             print(f"    • Method: {exposure['method']}")
             print(f"      URL: {exposure['url']}")
+
+    if results.get('metadata_leaks', {}).get('leaks'):
+        print(f"\n[!] METADATA LEAKS DETECTED:")
+        for leak in results['metadata_leaks']['leaks']:
+            print(f"    • {leak['type']} in {leak['source']}")
+            print(f"      Severity: {leak.get('severity', 'LOW')}")
+            print(f"      Detail:   {leak.get('detail', '')}")
 
     print("\n" + "="*70)

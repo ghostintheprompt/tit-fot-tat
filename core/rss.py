@@ -72,7 +72,7 @@ def discover_feeds(domain):
 
 def analyze_feed(feed_url):
     """
-    Analyze RSS feed for sensitive information leaks
+    Analyze RSS feed for sensitive information leaks, including metadata in linked media.
     """
     print(f"\n[+] Analyzing feed: {feed_url}")
 
@@ -89,7 +89,7 @@ def analyze_feed(feed_url):
         items = root.findall('.//item') or root.findall('.//{http://www.w3.org/2005/Atom}entry')
         print(f"    [i] Items found: {len(items)}")
 
-        for idx, item in enumerate(items[:5]):  # Check first 5 items
+        for idx, item in enumerate(items[:10]):  # Check first 10 items
             # Extract title and description
             title_elem = item.find('title') or item.find('{http://www.w3.org/2005/Atom}title')
             desc_elem = item.find('description') or item.find('{http://www.w3.org/2005/Atom}summary')
@@ -136,6 +136,51 @@ def analyze_feed(feed_url):
                         'pattern': pattern,
                         'matches': matches
                     })
+
+            # Check for media linked in the description/content
+            media_urls = re.findall(r'href=["\'](https?://[^"\']+\.(?:jpg|jpeg|png|pdf))["\']', description)
+            # Also check enclosures
+            enclosures = item.findall('enclosure')
+            for enc in enclosures:
+                url = enc.get('url')
+                if url:
+                    media_urls.append(url)
+
+            if media_urls:
+                print(f"    [+] Scanning {len(media_urls)} media items in item {idx + 1}...")
+                for m_url in list(set(media_urls)):
+                    try:
+                        ext = m_url.split('?')[0].lower()
+                        if any(ext.endswith(e) for e in (".jpg", ".jpeg", ".png")):
+                            r = requests.get(m_url, timeout=5, stream=True)
+                            chunk = b""
+                            for block in r.iter_content(65536):
+                                chunk += block
+                                if len(chunk) >= 65536: break
+                            exif = cms._parse_jpeg_exif(chunk)
+                            if exif:
+                                print(f"        [!] EXIF found in {m_url}")
+                                issues.append({
+                                    'type': 'metadata_leak',
+                                    'source': m_url,
+                                    'fields': exif
+                                })
+                        elif ext.endswith(".pdf"):
+                            r = requests.get(m_url, timeout=8, stream=True)
+                            chunk = b""
+                            for block in r.iter_content(8192):
+                                chunk += block
+                                if len(chunk) >= 8192: break
+                            pdf_meta = cms._parse_pdf_info(chunk)
+                            if pdf_meta:
+                                print(f"        [!] PDF Metadata found in {m_url}")
+                                issues.append({
+                                    'type': 'metadata_leak',
+                                    'source': m_url,
+                                    'fields': pdf_meta
+                                })
+                    except:
+                        pass
 
     except Exception as e:
         print(f"    [!] Feed analysis failed: {e}")

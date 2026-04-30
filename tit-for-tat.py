@@ -10,7 +10,7 @@ Unauthorized use violates federal law (CFAA, Computer Misuse Act, etc.)
 import argparse
 import json
 import sys
-from core import origin, cms, rss, reporting
+from core import origin, cms, rss, reporting, comments
 
 
 def banner():
@@ -29,6 +29,11 @@ def banner():
 def main():
     banner()
 
+    # Common parent parser for shared arguments
+    parent_parser = argparse.ArgumentParser(add_help=False)
+    parent_parser.add_argument('--stealth', action='store_true',
+                                help='Apply behavioral jitter and browser fingerprint rotation')
+
     parser = argparse.ArgumentParser(
         description='Newsroom Security Testing Framework',
         epilog='Use only on authorized targets. Unauthorized testing violates federal law.'
@@ -37,7 +42,7 @@ def main():
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     # Origin server discovery
-    origin_parser = subparsers.add_parser('origin', help='Discover origin server (Cloudflare bypass)')
+    origin_parser = subparsers.add_parser('origin', parents=[parent_parser], help='Discover origin server (Cloudflare bypass)')
     origin_parser.add_argument('--domain', required=True, help='Target domain')
     origin_parser.add_argument('--all-methods', action='store_true', help='Try all discovery methods')
     origin_parser.add_argument('--cert-transparency', action='store_true', help='Certificate Transparency logs')
@@ -46,33 +51,36 @@ def main():
     origin_parser.add_argument('--subdomain-scan', action='store_true', help='Subdomain enumeration')
 
     # CMS scanning
-    cms_parser = subparsers.add_parser('cms-scan', help='Scan CMS for vulnerabilities')
+    cms_parser = subparsers.add_parser('cms-scan', parents=[parent_parser], help='Scan CMS for vulnerabilities')
     cms_parser.add_argument('--url', required=True, help='Target URL')
     cms_parser.add_argument('--check-plugins', action='store_true', help='Check for vulnerable plugins')
     cms_parser.add_argument('--check-drafts', action='store_true', help='Test draft exposure')
 
+    # Comment platform scanning
+    comment_parser = subparsers.add_parser('comments-scan', parents=[parent_parser], help='Analyze comment platform security')
+    comment_parser.add_argument('--url', required=True, help='Target URL')
+
     # RSS monitoring
-    rss_parser = subparsers.add_parser('rss', help='Monitor RSS feeds for leaks')
+    rss_parser = subparsers.add_parser('rss', parents=[parent_parser], help='Monitor RSS feeds for leaks')
     rss_parser.add_argument('--domain', required=True, help='Target domain')
     rss_parser.add_argument('--enumerate-all', action='store_true', help='Find all RSS feeds')
     rss_parser.add_argument('--monitor', action='store_true', help='Continuous monitoring')
     rss_parser.add_argument('--interval', type=int, default=300, help='Check interval (seconds)')
 
     # Full audit
-    audit_parser = subparsers.add_parser('audit', help='Full defensive security audit')
+    audit_parser = subparsers.add_parser('audit', parents=[parent_parser], help='Full defensive security audit')
     audit_parser.add_argument('--target', required=True, help='Target site URL/domain')
     audit_parser.add_argument('--origin-discovery', action='store_true', help='Include origin discovery')
     audit_parser.add_argument('--cms-scan', action='store_true', help='Include CMS scan')
+    audit_parser.add_argument('--comments-analysis', action='store_true', help='Include comments analysis')
     audit_parser.add_argument('--rss-analysis', action='store_true', help='Include RSS analysis')
     audit_parser.add_argument('--output', help='Output report file (HTML)')
 
     # Forensic fetch — fetch URL, produce chain-of-custody report
     forensic_parser = subparsers.add_parser(
-        'forensic', help='Fetch URL and produce forensic integrity report'
+        'forensic', parents=[parent_parser], help='Fetch URL and produce forensic integrity report'
     )
     forensic_parser.add_argument('--url', required=True, help='URL to fetch and document')
-    forensic_parser.add_argument('--stealth', action='store_true',
-                                 help='Apply behavioral jitter and browser fingerprint rotation')
     forensic_parser.add_argument('--output-dir', default='forensics',
                                  help='Directory for chain-of-custody JSON (default: forensics/)')
     forensic_parser.add_argument('--entropy-score', action='store_true',
@@ -80,11 +88,9 @@ def main():
 
     # Canary scanner — detect honeytokens in a target page
     canary_parser = subparsers.add_parser(
-        'canary-scan', help='Scan a URL for embedded canary tokens and honeytrap signals'
+        'canary-scan', parents=[parent_parser], help='Scan a URL for embedded canary tokens and honeytrap signals'
     )
     canary_parser.add_argument('--url', required=True, help='URL to scan')
-    canary_parser.add_argument('--stealth', action='store_true',
-                               help='Fetch with browser fingerprint rotation')
 
     args = parser.parse_args()
 
@@ -92,21 +98,37 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    # Global stealth configuration
+    session = None
+    if getattr(args, 'stealth', False):
+        print("[*] Stealth Mode: Enabled (Fingerprint rotation + Jitter)")
+        session, _ = _make_session(True)
+        try:
+            from evasion.behavioral import StealthRequestor
+            session = StealthRequestor(session.get)
+        except ImportError:
+            print("[!] Could not load evasion modules, using standard session")
+
     # Execute command
     try:
         if args.command == 'origin':
             print(f"\n[*] Starting origin server discovery for {args.domain}\n")
-            results = origin.discover(args)
+            results = origin.discover(args, session=session)
             origin.display_results(results)
 
         elif args.command == 'cms-scan':
             print(f"\n[*] Starting CMS security scan for {args.url}\n")
-            results = cms.scan(args)
+            results = cms.scan(args, session=session)
             cms.display_results(results)
+
+        elif args.command == 'comments-scan':
+            print(f"\n[*] Starting comment platform analysis for {args.url}\n")
+            results = comments.scan(args, session=session)
+            comments.display_results(results)
 
         elif args.command == 'rss':
             print(f"\n[*] Starting RSS analysis for {args.domain}\n")
-            results = rss.analyze(args)
+            results = rss.analyze(args, session=session)
             rss.display_results(results)
 
         elif args.command == 'audit':
@@ -118,18 +140,19 @@ def main():
 
             if args.origin_discovery:
                 print("\n[+] Phase 1: Origin Server Discovery")
-                origin_args = argparse.Namespace(domain=args.target, all_methods=True)
-                results['origin'] = origin.discover(origin_args)
+                results['origin'] = origin.discover(args, target=args.target, session=session)
 
             if args.cms_scan:
                 print("\n[+] Phase 2: CMS Security Testing")
-                cms_args = argparse.Namespace(url=args.target, check_plugins=True, check_drafts=True)
-                results['cms'] = cms.scan(cms_args)
+                results['cms'] = cms.scan(args, target=args.target, session=session)
+
+            if args.comments_analysis:
+                print("\n[+] Phase 3: Comment Platform Analysis")
+                results['comments'] = comments.scan(args, target=args.target, session=session)
 
             if args.rss_analysis:
-                print("\n[+] Phase 3: RSS Feed Analysis")
-                rss_args = argparse.Namespace(domain=args.target, enumerate_all=True, monitor=False)
-                results['rss'] = rss.analyze(rss_args)
+                print("\n[+] Phase 4: RSS Feed Analysis")
+                results['rss'] = rss.analyze(args, target=args.target, session=session)
 
             # Generate report
             if args.output:
@@ -139,16 +162,18 @@ def main():
                 reporting.display_summary(results)
 
         elif args.command == 'forensic':
-            _cmd_forensic(args)
+            _cmd_forensic(args, session=session)
 
         elif args.command == 'canary-scan':
-            _cmd_canary_scan(args)
+            _cmd_canary_scan(args, session=session)
 
     except KeyboardInterrupt:
         print("\n\n[!] Interrupted by user")
         sys.exit(0)
     except Exception as e:
         print(f"\n[!] Error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
@@ -169,25 +194,21 @@ def _make_session(stealth: bool):
     return _req.Session(), {}
 
 
-def _cmd_forensic(args):
+def _cmd_forensic(args, session=None):
     """fetch → chain-of-custody report, optional stealth + entropy scoring."""
     import socket as _socket
     import requests as _req
 
     print(f"\n[*] Forensic fetch: {args.url}\n")
 
-    session, profile = _make_session(args.stealth)
-    jitter = None
-
-    if args.stealth:
-        try:
-            from evasion.behavioral import JitterEngine
-            jitter = JitterEngine()
-        except ImportError:
-            pass
+    if session is None:
+        _sess, profile = _make_session(getattr(args, 'stealth', False))
+        _get = _sess.get
+    else:
+        _get = session.get
 
     try:
-        resp = session.get(args.url, timeout=15)
+        resp = _get(args.url, timeout=15)
         content = resp.content
         source_ip = None
 
@@ -222,29 +243,37 @@ def _cmd_forensic(args):
         print(f"[+] Collected:  {coc['collected_at']}")
         print(f"[+] Report saved: {path}")
 
-        if args.entropy_score and jitter:
-            report = jitter.entropy_report()
-            print(f"\n[*] Behavioral Entropy Report:")
-            print(f"    Entropy:       {report.get('entropy_bits', 'n/a')} bits")
-            print(f"    Human-likeness:{report.get('human_likeness', 'n/a')}")
-            print(f"    Detection risk:{report.get('detection_risk', 'n/a')}")
+        if args.entropy_score:
+            # If session is a StealthRequestor, it has entropy_report
+            if hasattr(session, 'entropy_report'):
+                report = session.entropy_report()
+                print(f"\n[*] Behavioral Entropy Report:")
+                print(f"    Entropy:       {report.get('entropy_bits', 'n/a')} bits")
+                print(f"    Human-likeness:{report.get('human_likeness', 'n/a')}")
+                print(f"    Detection risk:{report.get('detection_risk', 'n/a')}")
 
-    except _req.RequestException as e:
+    except Exception as e:
         print(f"[!] Fetch failed: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
-def _cmd_canary_scan(args):
+def _cmd_canary_scan(args, session=None):
     """Fetch a page and report all embedded canary tokens."""
     import requests as _req
 
     print(f"\n[*] Canary token scan: {args.url}\n")
 
-    session, _ = _make_session(args.stealth)
+    if session is None:
+        _sess, _ = _make_session(getattr(args, 'stealth', False))
+        _get = _sess.get
+    else:
+        _get = session.get
 
     try:
-        resp = session.get(args.url, timeout=15)
-    except _req.RequestException as e:
+        resp = _get(args.url, timeout=15)
+    except Exception as e:
         print(f"[!] Fetch failed: {e}")
         sys.exit(1)
 
